@@ -12,7 +12,7 @@ Author: PHY294 Lab Analysis Tool
 import argparse
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Sequence
 
 import matplotlib
 matplotlib.use('Agg')  # Non-GUI backend
@@ -264,7 +264,8 @@ def plot_scan(
     theta_init_peak: Optional[Dict],
     secondary_peak: Optional[Dict],
     output_path: Path,
-    debug: bool = False
+    debug: bool = False,
+    uncertainty_deg: Optional[float] = None
 ) -> None:
     """
     Create a diagnostic plot for a scan.
@@ -273,12 +274,11 @@ def plot_scan(
         file_name: Name of the data file
         angles: Angle values
         raw_intensity: Raw intensity data
-        smoothed: Smoothed intensity
-        baseline_corrected: Baseline-corrected intensity
-        main_peak: Main peak dictionary (or None)
-        small_peak: Small peak dictionary (or None)
+        theta_init_peak: Theta_init peak dictionary (or None)
+        secondary_peak: Secondary peak dictionary (or None)
         output_path: Path to save the plot
         debug: If True, add extra information to plot
+        uncertainty_deg: Uncertainty in theta_init (optional, for annotation)
     """
     fig, ax2 = plt.subplots(1, 1, figsize=(12, 6))
     
@@ -295,10 +295,16 @@ def plot_scan(
         ax2.axvline(secondary_peak['angle'], color='red', linestyle='--', linewidth=2, alpha=0.7, label='Secondary peak')
         ax2.plot(secondary_peak['angle'], secondary_peak['height'], 'ro', markersize=10)
         
-        # Annotate theta_init angle
+    # Annotate theta_init angle (with uncertainty if provided)
+    if theta_init_peak:
+        if uncertainty_deg is not None:
+            annotation_text = f"θ_init = {theta_init_peak['angle']:.2f}° ± {uncertainty_deg:.4f}°"
+        else:
+            annotation_text = f"θ_init = {theta_init_peak['angle']:.2f}°"
+        
         ax2.annotate(
-            f"θ_init = {theta_init_peak['angle']:.2f}°" if theta_init_peak else "θ_init",
-            xy=(theta_init_peak['angle'], theta_init_peak['height']) if theta_init_peak else (secondary_peak['angle'], secondary_peak['height']),
+            annotation_text,
+            xy=(theta_init_peak['angle'], theta_init_peak['height']),
             xytext=(10, 20),
             textcoords='offset points',
             fontsize=12,
@@ -396,6 +402,55 @@ def analyze_step1_file(
         warnings.warn(f"Failed to analyze {file_path.name}: {e}")
     
     return result
+
+
+def compute_step1_theta_init_uncertainty(theta_init_deg: Sequence[float]) -> dict:
+    """
+    Compute uncertainty statistics for Step 1 theta_init across repeated measurements.
+    
+    Uses standard 2nd-year physics definitions:
+      - sample standard deviation (N-1 in denominator)
+      - standard error of the mean (SEM = sd / sqrt(N))
+    
+    Args:
+        theta_init_deg: Sequence of theta_init measurements in degrees
+        
+    Returns:
+        Dictionary with keys:
+          'n', 'mean_deg', 'sd_deg', 'sem_deg', 'min_deg', 'max_deg', 'half_range_deg'
+          
+    Raises:
+        ValueError: If n < 2 or any NaN exists
+    """
+    # Check for NaNs
+    values = np.array(theta_init_deg)
+    nan_mask = np.isnan(values)
+    if nan_mask.any():
+        nan_indices = np.where(nan_mask)[0]
+        raise ValueError(f"Found NaN theta_init values at indices: {nan_indices.tolist()}")
+    
+    n = len(values)
+    if n < 2:
+        raise ValueError(f"Need at least 2 measurements for uncertainty analysis, got {n}")
+    
+    # Standard 2nd-year physics error analysis:
+    # Sample standard deviation (N-1), SEM = sd/sqrt(N)
+    mean_deg = float(np.mean(values))
+    sd_deg = float(np.std(values, ddof=1))  # ddof=1 for sample std dev
+    sem_deg = sd_deg / np.sqrt(n)
+    min_deg = float(np.min(values))
+    max_deg = float(np.max(values))
+    half_range_deg = (max_deg - min_deg) / 2.0
+    
+    return {
+        'n': n,
+        'mean_deg': mean_deg,
+        'sd_deg': sd_deg,
+        'sem_deg': sem_deg,
+        'min_deg': min_deg,
+        'max_deg': max_deg,
+        'half_range_deg': half_range_deg
+    }
 
 
 def compute_statistics(theta_init_values: List[float]) -> Dict[str, float]:
@@ -576,11 +631,67 @@ def main():
         else:
             print(f"  → Could not determine θ_init: {result['notes']}")
     
-    # Save results table
+    # Compute uncertainty statistics and add to each result row
     results_df = pd.DataFrame(results)
+    theta_init_values = results_df['theta_init_deg'].values
+    
+    # Check if we have the expected number of files
+    if len(step1_files) != 5:
+        warnings.warn(f"Expected 5 Step 1 files, found {len(step1_files)}")
+    
+    # Compute uncertainties
+    try:
+        uncertainty_stats = compute_step1_theta_init_uncertainty(theta_init_values)
+        
+        # Add uncertainty columns to each row (same values repeated)
+        results_df['theta_init_mean_deg'] = uncertainty_stats['mean_deg']
+        results_df['theta_init_sd_deg'] = uncertainty_stats['sd_deg']
+        results_df['theta_init_sem_deg'] = uncertainty_stats['sem_deg']
+        results_df['theta_init_n'] = uncertainty_stats['n']
+        
+        # Print uncertainty summary to terminal
+        print(f"\n{'='*70}")
+        print("UNCERTAINTY ANALYSIS (Step 1 θ_init)")
+        print(f"{'='*70}")
+        print(f"N (measurements):          {uncertainty_stats['n']}")
+        print(f"Mean:                      {uncertainty_stats['mean_deg']:.4f}°")
+        print(f"Sample std dev (σ):        {uncertainty_stats['sd_deg']:.4f}°")
+        print(f"Std error of mean (SEM):   {uncertainty_stats['sem_deg']:.4f}°")
+        print(f"Range:                     [{uncertainty_stats['min_deg']:.4f}°, {uncertainty_stats['max_deg']:.4f}°]")
+        print(f"Half-range:                {uncertainty_stats['half_range_deg']:.4f}°")
+        print(f"{'='*70}\n")
+        
+        # Regenerate plots with uncertainty annotations
+        print("Updating plots with uncertainty annotations...")
+        uncertainty_deg = uncertainty_stats['sd_deg']  # Use sample std dev for uncertainty
+        for i, (file_path, result) in enumerate(zip(step1_files, results)):
+            if not np.isnan(result['theta_init_deg']):
+                # Re-analyze to get peak data for plotting
+                try:
+                    df = load_scan(file_path)
+                    angles, raw = preprocess_scan(df)
+                    peaks = detect_peaks(angles, raw, prominence_threshold=config.PROMINENCE_THRESHOLD)
+                    theta_init_peak, secondary_peak, _ = choose_theta_init_peak(
+                        peaks, min_separation_deg=config.MIN_SEPARATION_DEG, min_height_ratio=config.MIN_HEIGHT_RATIO
+                    )
+                    plot_path = output_dir / 'plots' / f"{file_path.stem}_step1.png"
+                    plot_scan(file_path.name, angles, raw, theta_init_peak, secondary_peak, plot_path, 
+                             debug=config.DEBUG, uncertainty_deg=uncertainty_deg)
+                except Exception as e:
+                    warnings.warn(f"Could not update plot for {file_path.name}: {e}")
+        
+    except ValueError as e:
+        print(f"\nWARNING: Could not compute uncertainties: {e}")
+        # Add NaN columns if computation failed
+        results_df['theta_init_mean_deg'] = np.nan
+        results_df['theta_init_sd_deg'] = np.nan
+        results_df['theta_init_sem_deg'] = np.nan
+        results_df['theta_init_n'] = 0
+    
+    # Save results table with uncertainty columns
     table_path = output_dir / 'step1_theta_init_table.csv'
     results_df.to_csv(table_path, index=False)
-    print(f"\nResults table saved to: {table_path}")
+    print(f"Results table saved to: {table_path}")
 
     # Summary plots and table
     plot_summary(results_df, output_dir)
