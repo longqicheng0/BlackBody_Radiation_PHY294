@@ -18,14 +18,9 @@ outputs/
 ## File Descriptions
 
 ### Individual Plots (`plots/*.png`)
-Each plot contains two panels:
+Each plot contains a single panel with:
 
-**Top panel:**
-- Raw intensity data (thin black line)
-- Smoothed intensity (thick blue line)
-
-**Bottom panel:**
-- Baseline-corrected signal (green line)
+- Raw signal (green line)
 - Main blackbody peak (red dashed line)
 - Small direct-light peak / θ_init (orange dashed line)
 - Annotation showing θ_init value

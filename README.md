@@ -77,22 +77,20 @@ python3 -m bb_step1
 **Custom options:**
 ```bash
 python3 -m bb_step1 \
-  --data_dir Blackbody_Lab_Data \
-  --pattern "**/step1*.txt" \
-  --out_dir outputs \
-  --prominence 0.01 \
-  --min_separation_deg 2.0 \
-  --smooth_window 11 \
-  --debug
+   --data_dir Blackbody_Lab_Data \
+   --pattern "**/[sS]tep1*.txt" \
+   --out_dir outputs \
+   --prominence 0.01 \
+   --min_separation_deg 2.0 \
+   --debug
 ```
 
 **Key parameters:**
 - `--data_dir`: Directory containing data files (default: `Blackbody_Lab_Data`)
-- `--pattern`: Glob pattern for Step 1 files (default: `**/step1*.txt`)
+- `--pattern`: Glob pattern for Step 1 files (default: `**/[sS]tep1*.txt`)
 - `--out_dir`: Output directory (default: `outputs`)
 - `--prominence`: Minimum peak prominence in volts (default: 0.01)
 - `--min_separation_deg`: Minimum angle separation between main and small peaks (default: 2.0°)
-- `--smooth_window`: Smoothing window size (default: 11)
 - `--debug`: Enable debug mode (saves extra diagnostic files)
 
 ### Outputs
@@ -100,8 +98,7 @@ python3 -m bb_step1 \
 After running the analysis, the following files are generated:
 
 1. **`outputs/plots/<filename>_step1.png`** - Individual scan plots showing:
-   - Raw and smoothed intensity curves
-   - Baseline-corrected signal
+   - Raw intensity curve
    - Main blackbody peak (red line)
    - Small direct-light peak θ_init (orange line, annotated)
 
@@ -117,6 +114,12 @@ After running the analysis, the following files are generated:
    - Standard error of the mean
    - Range and half-range
    - Uncertainty recommendations
+ 
+4. **`outputs/summary/`** - Summary plots and tables:
+   - `step1_theta_init_summary.csv`
+   - `step1_theta_init_by_file.png`
+   - `step1_theta_init_hist.png`
+   - `step1_theta_init_box.png`
 
 ### How It Works
 
@@ -126,16 +129,14 @@ The analysis pipeline:
 
 2. **Preprocessing**:
    - Sorts data by angle
-   - Applies smoothing (Savitzky-Golay filter if scipy available, else moving average)
-   - Baseline correction (subtracts low-percentile baseline)
 
 3. **Peak Detection**:
-   - Identifies all peaks above a prominence threshold
-   - Classifies the **main peak** (largest prominence - the blackbody emission)
-   - Identifies the **small peak** (θ_init) as the most prominent secondary peak that:
-     - Is separated from the main peak by > 2° (configurable)
-     - Has sufficient height (> 5% of main peak)
-     - Is not noise
+    - Identifies all peaks above a prominence threshold
+    - Sets **θ_init** to the **highest-prominence peak** (highest intensity feature)
+    - Identifies a **secondary peak** that:
+       - Is separated from θ_init by > 2° (configurable)
+       - Has sufficient height (> 5% of θ_init)
+       - Is not noise
 
 4. **Output Generation**:
    - Creates diagnostic plots with peak annotations

@@ -20,9 +20,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Optional scipy for better smoothing
+# Optional scipy for peak detection
 try:
-    from scipy.signal import savgol_filter, find_peaks
+    from scipy.signal import find_peaks
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
@@ -37,13 +37,11 @@ class Config:
     """Default configuration parameters for analysis."""
     # Data discovery
     DATA_DIR = "Blackbody_Lab_Data"
-    PATTERN = "**/step1*.txt"
+    PATTERN = "**/[sS]tep1*.txt"
     OUTPUT_DIR = "outputs"
     
     # Preprocessing
-    SMOOTH_WINDOW = 11  # Must be odd for Savitzky-Golay
-    SMOOTH_POLY = 3     # Polynomial order for Savitzky-Golay
-    BASELINE_PERCENTILE = 5  # Percentile for baseline estimation
+    # (Baseline correction removed; use raw data directly.)
     
     # Peak detection
     PROMINENCE_THRESHOLD = 0.01  # Minimum prominence (volts)
@@ -120,70 +118,21 @@ def load_scan(file_path: Path) -> pd.DataFrame:
 # ============================================================================
 
 def preprocess_scan(
-    df: pd.DataFrame,
-    smooth_window: int = Config.SMOOTH_WINDOW,
-    smooth_poly: int = Config.SMOOTH_POLY,
-    baseline_percentile: float = Config.BASELINE_PERCENTILE
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    df: pd.DataFrame
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Preprocess scan data: smooth and baseline-correct.
+    Preprocess scan data (no baseline correction).
     
     Args:
         df: DataFrame with 'angle' and 'intensity' columns
-        smooth_window: Window size for smoothing (must be odd)
-        smooth_poly: Polynomial order for Savitzky-Golay (if scipy available)
-        baseline_percentile: Percentile for baseline estimation
         
     Returns:
-        Tuple of (angles, raw_intensity, smoothed_intensity, baseline_corrected)
+        Tuple of (angles, raw_intensity)
     """
     angles = df['angle'].values
     raw_intensity = df['intensity'].values
     
-    # Smoothing
-    if SCIPY_AVAILABLE and len(angles) > smooth_window:
-        # Ensure window is odd and valid
-        window = smooth_window if smooth_window % 2 == 1 else smooth_window + 1
-        window = min(window, len(angles) - 1)
-        if window % 2 == 0:
-            window -= 1
-        window = max(3, window)
-        
-        try:
-            smoothed = savgol_filter(raw_intensity, window, smooth_poly)
-        except Exception:
-            # Fallback to moving average
-            smoothed = moving_average(raw_intensity, window)
-    else:
-        # Moving average fallback
-        window = min(smooth_window, len(angles))
-        smoothed = moving_average(raw_intensity, window)
-    
-    # Baseline correction (subtract low percentile to handle drift)
-    baseline = np.percentile(smoothed, baseline_percentile)
-    baseline_corrected = smoothed - baseline
-    
-    return angles, raw_intensity, smoothed, baseline_corrected
-
-
-def moving_average(data: np.ndarray, window: int) -> np.ndarray:
-    """Simple moving average smoothing."""
-    if window < 3:
-        return data
-    
-    # Ensure window is odd
-    if window % 2 == 0:
-        window += 1
-    
-    half_window = window // 2
-    smoothed = np.copy(data)
-    
-    for i in range(len(data)):
-        start = max(0, i - half_window)
-        end = min(len(data), i + half_window + 1)
-        smoothed[i] = np.mean(data[start:end])
-    
-    return smoothed
+    return angles, raw_intensity
 
 
 # ============================================================================
@@ -200,7 +149,7 @@ def detect_peaks(
     
     Args:
         angles: Angle values (degrees)
-        signal: Intensity signal (baseline-corrected)
+        signal: Intensity signal
         prominence_threshold: Minimum prominence for peak detection
         
     Returns:
@@ -212,7 +161,7 @@ def detect_peaks(
         peak_indices, properties = find_peaks(
             signal,
             prominence=prominence_threshold,
-            height=0  # Only positive peaks after baseline correction
+            height=0  # Only positive peaks
         )
         
         if len(peak_indices) == 0:
@@ -258,50 +207,50 @@ def detect_peaks(
     return peaks_df
 
 
-def choose_small_peak(
+def choose_theta_init_peak(
     peaks: pd.DataFrame,
     min_separation_deg: float = Config.MIN_SEPARATION_DEG,
     min_height_ratio: float = Config.MIN_HEIGHT_RATIO
 ) -> Tuple[Optional[Dict], Optional[Dict], str]:
     """
-    Identify the main peak and the small direct-light peak.
+    Identify the theta_init peak (highest intensity) and the secondary peak.
     
     Args:
         peaks: DataFrame of detected peaks
-        min_separation_deg: Minimum angle separation between main and small peak
-        min_height_ratio: Small peak must be at least this fraction of main peak height
+        min_separation_deg: Minimum angle separation between peaks
+        min_height_ratio: Secondary peak must be at least this fraction of theta_init height
         
     Returns:
-        Tuple of (main_peak_dict, small_peak_dict, notes_string)
+        Tuple of (theta_init_peak_dict, secondary_peak_dict, notes_string)
         Either peak dict can be None if not found
     """
     if len(peaks) == 0:
         return None, None, "No peaks detected"
     
-    # Main peak is the one with largest prominence
-    main_peak = peaks.iloc[0].to_dict()
+    # Theta_init is the peak with the highest prominence (largest intensity feature)
+    theta_init_peak = peaks.iloc[0].to_dict()
     
     if len(peaks) == 1:
-        return main_peak, None, "Only one peak detected"
+        return theta_init_peak, None, "Only one peak detected"
     
-    # Look for small peak: must be separated from main peak and above noise
-    min_height = main_peak['height'] * min_height_ratio
+    # Look for secondary peak: separated from theta_init and above noise
+    min_height = theta_init_peak['height'] * min_height_ratio
     
     candidates = []
     for idx, peak in peaks.iloc[1:].iterrows():
-        angle_separation = abs(peak['angle'] - main_peak['angle'])
+        angle_separation = abs(peak['angle'] - theta_init_peak['angle'])
         
         if angle_separation >= min_separation_deg and peak['height'] >= min_height:
             candidates.append(peak)
     
     if len(candidates) == 0:
-        return main_peak, None, f"No secondary peak found (separation > {min_separation_deg}°, height > {min_height_ratio:.1%} of main)"
+        return theta_init_peak, None, f"No secondary peak found (separation > {min_separation_deg}°, height > {min_height_ratio:.1%} of theta_init)"
     
     # Choose the most prominent candidate
-    small_peak = candidates[0].to_dict()
-    notes = f"Small peak found at {small_peak['angle']:.2f}° (prominence: {small_peak['prominence']:.4f})"
+    secondary_peak = candidates[0].to_dict()
+    notes = f"Secondary peak found at {secondary_peak['angle']:.2f}° (prominence: {secondary_peak['prominence']:.4f})"
     
-    return main_peak, small_peak, notes
+    return theta_init_peak, secondary_peak, notes
 
 
 # ============================================================================
@@ -312,10 +261,8 @@ def plot_scan(
     file_name: str,
     angles: np.ndarray,
     raw_intensity: np.ndarray,
-    smoothed: np.ndarray,
-    baseline_corrected: np.ndarray,
-    main_peak: Optional[Dict],
-    small_peak: Optional[Dict],
+    theta_init_peak: Optional[Dict],
+    secondary_peak: Optional[Dict],
     output_path: Path,
     debug: bool = False
 ) -> None:
@@ -333,33 +280,25 @@ def plot_scan(
         output_path: Path to save the plot
         debug: If True, add extra information to plot
     """
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    fig, ax2 = plt.subplots(1, 1, figsize=(12, 6))
     
-    # Top panel: Raw and smoothed
-    ax1.plot(angles, raw_intensity, 'k-', alpha=0.3, linewidth=0.5, label='Raw')
-    ax1.plot(angles, smoothed, 'b-', linewidth=1.5, label='Smoothed')
-    ax1.set_ylabel('Intensity (V)')
-    ax1.set_title(f'Step 1 Analysis: {file_name}')
-    ax1.legend(loc='best')
-    ax1.grid(True, alpha=0.3)
-    
-    # Bottom panel: Baseline-corrected with peaks
-    ax2.plot(angles, baseline_corrected, 'g-', linewidth=2, label='Baseline-corrected')
-    ax2.axhline(0, color='k', linestyle='--', alpha=0.3)
+    # Single panel: Raw data with peaks
+    ax2.plot(angles, raw_intensity, 'g-', linewidth=2, label='Raw')
+    ax2.set_title(f'Step 1 Analysis: {file_name}')
     
     # Mark peaks
-    if main_peak:
-        ax2.axvline(main_peak['angle'], color='red', linestyle='--', linewidth=2, alpha=0.7, label='Main peak')
-        ax2.plot(main_peak['angle'], main_peak['height'], 'ro', markersize=10)
+    if theta_init_peak:
+        ax2.axvline(theta_init_peak['angle'], color='orange', linestyle='--', linewidth=2, alpha=0.7, label='θ_init peak')
+        ax2.plot(theta_init_peak['angle'], theta_init_peak['height'], 'o', color='orange', markersize=10)
     
-    if small_peak:
-        ax2.axvline(small_peak['angle'], color='orange', linestyle='--', linewidth=2, alpha=0.7, label='Small peak (θ_init)')
-        ax2.plot(small_peak['angle'], small_peak['height'], 'o', color='orange', markersize=10)
+    if secondary_peak:
+        ax2.axvline(secondary_peak['angle'], color='red', linestyle='--', linewidth=2, alpha=0.7, label='Secondary peak')
+        ax2.plot(secondary_peak['angle'], secondary_peak['height'], 'ro', markersize=10)
         
-        # Annotate small peak angle
+        # Annotate theta_init angle
         ax2.annotate(
-            f"θ_init = {small_peak['angle']:.2f}°",
-            xy=(small_peak['angle'], small_peak['height']),
+            f"θ_init = {theta_init_peak['angle']:.2f}°" if theta_init_peak else "θ_init",
+            xy=(theta_init_peak['angle'], theta_init_peak['height']) if theta_init_peak else (secondary_peak['angle'], secondary_peak['height']),
             xytext=(10, 20),
             textcoords='offset points',
             fontsize=12,
@@ -369,7 +308,7 @@ def plot_scan(
         )
     
     ax2.set_xlabel('Angle (degrees)')
-    ax2.set_ylabel('Intensity (V, baseline-corrected)')
+    ax2.set_ylabel('Intensity (V)')
     ax2.legend(loc='best')
     ax2.grid(True, alpha=0.3)
     
@@ -402,7 +341,7 @@ def analyze_step1_file(
     result = {
         'file': file_path.name,
         'theta_init_deg': np.nan,
-        'theta_init_method': 'auto_peak_detection',
+        'theta_init_method': 'auto_peak_detection_highest_peak',
         'notes': ''
     }
     
@@ -411,22 +350,17 @@ def analyze_step1_file(
         df = load_scan(file_path)
         
         # Preprocess
-        angles, raw, smoothed, baseline_corrected = preprocess_scan(
-            df,
-            smooth_window=config.SMOOTH_WINDOW,
-            smooth_poly=config.SMOOTH_POLY,
-            baseline_percentile=config.BASELINE_PERCENTILE
-        )
+        angles, raw = preprocess_scan(df)
         
         # Detect peaks
         peaks = detect_peaks(
             angles,
-            baseline_corrected,
+            raw,
             prominence_threshold=config.PROMINENCE_THRESHOLD
         )
         
-        # Choose main and small peaks
-        main_peak, small_peak, notes = choose_small_peak(
+        # Choose theta_init and secondary peaks
+        theta_init_peak, secondary_peak, notes = choose_theta_init_peak(
             peaks,
             min_separation_deg=config.MIN_SEPARATION_DEG,
             min_height_ratio=config.MIN_HEIGHT_RATIO
@@ -434,8 +368,8 @@ def analyze_step1_file(
         
         result['notes'] = notes
         
-        if small_peak:
-            result['theta_init_deg'] = small_peak['angle']
+        if theta_init_peak:
+            result['theta_init_deg'] = theta_init_peak['angle']
         else:
             warnings.warn(f"Could not find small peak in {file_path.name}: {notes}")
         
@@ -445,10 +379,8 @@ def analyze_step1_file(
             file_path.name,
             angles,
             raw,
-            smoothed,
-            baseline_corrected,
-            main_peak,
-            small_peak,
+            theta_init_peak,
+            secondary_peak,
             plot_path,
             debug=config.DEBUG
         )
@@ -503,6 +435,80 @@ def compute_statistics(theta_init_values: List[float]) -> Dict[str, float]:
     return stats
 
 
+def plot_summary(results_df: pd.DataFrame, output_dir: Path) -> None:
+    """
+    Create summary plots and tables for theta_init results.
+
+    Args:
+        results_df: DataFrame with theta_init results
+        output_dir: Base output directory
+    """
+    summary_dir = output_dir / "summary"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clean values
+    clean_df = results_df.dropna(subset=['theta_init_deg']).copy()
+    if clean_df.empty:
+        return
+
+    # Summary table
+    values = clean_df['theta_init_deg'].values
+    summary_stats = {
+        'count': len(values),
+        'mean': float(np.mean(values)),
+        'std': float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+        'sem': float(np.std(values, ddof=1) / np.sqrt(len(values))) if len(values) > 1 else 0.0,
+        'min': float(np.min(values)),
+        'max': float(np.max(values)),
+        'median': float(np.median(values)),
+        'q1': float(np.percentile(values, 25)),
+        'q3': float(np.percentile(values, 75)),
+        'iqr': float(np.percentile(values, 75) - np.percentile(values, 25))
+    }
+    summary_table = pd.DataFrame([summary_stats])
+    summary_table.to_csv(summary_dir / 'step1_theta_init_summary.csv', index=False)
+
+    # Plot 1: theta_init by file
+    fig, ax = plt.subplots(figsize=(10, 5))
+    x = np.arange(len(clean_df))
+    ax.plot(x, values, 'o-', color='tab:blue', label='θ_init')
+    ax.axhline(summary_stats['mean'], color='tab:orange', linestyle='--', label='Mean')
+    ax.set_xticks(x)
+    ax.set_xticklabels(clean_df['file'].tolist(), rotation=45, ha='right')
+    ax.set_ylabel('θ_init (degrees)')
+    ax.set_title('θ_init by File')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best')
+    plt.tight_layout()
+    plt.savefig(summary_dir / 'step1_theta_init_by_file.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+    # Plot 2: histogram
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(values, bins='auto', color='tab:green', alpha=0.7, edgecolor='black')
+    ax.axvline(summary_stats['mean'], color='tab:orange', linestyle='--', label='Mean')
+    ax.set_xlabel('θ_init (degrees)')
+    ax.set_ylabel('Count')
+    ax.set_title('θ_init Distribution')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best')
+    plt.tight_layout()
+    plt.savefig(summary_dir / 'step1_theta_init_hist.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+    # Plot 3: boxplot
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.boxplot(values, vert=True, patch_artist=True,
+               boxprops=dict(facecolor='lightblue', color='black'),
+               medianprops=dict(color='red'))
+    ax.set_ylabel('θ_init (degrees)')
+    ax.set_title('θ_init Boxplot')
+    ax.grid(True, axis='y', alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(summary_dir / 'step1_theta_init_box.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+
 def main():
     """Main entry point for Step 1 analysis."""
     parser = argparse.ArgumentParser(
@@ -523,10 +529,6 @@ def main():
                         help='Minimum peak prominence (V)')
     parser.add_argument('--min_separation_deg', type=float, default=Config.MIN_SEPARATION_DEG,
                         help='Minimum angle separation between peaks (degrees)')
-    parser.add_argument('--smooth_window', type=int, default=Config.SMOOTH_WINDOW,
-                        help='Smoothing window size')
-    parser.add_argument('--smooth_poly', type=int, default=Config.SMOOTH_POLY,
-                        help='Polynomial order for Savitzky-Golay')
     
     # Debug
     parser.add_argument('--debug', action='store_true',
@@ -541,8 +543,6 @@ def main():
     config.OUTPUT_DIR = args.out_dir
     config.PROMINENCE_THRESHOLD = args.prominence
     config.MIN_SEPARATION_DEG = args.min_separation_deg
-    config.SMOOTH_WINDOW = args.smooth_window
-    config.SMOOTH_POLY = args.smooth_poly
     config.DEBUG = args.debug
     
     # Find Step 1 files
@@ -581,6 +581,9 @@ def main():
     table_path = output_dir / 'step1_theta_init_table.csv'
     results_df.to_csv(table_path, index=False)
     print(f"\nResults table saved to: {table_path}")
+
+    # Summary plots and table
+    plot_summary(results_df, output_dir)
     
     # Compute statistics
     theta_init_values = results_df['theta_init_deg'].values
@@ -625,6 +628,7 @@ def main():
     print("\n" + summary_text)
     print(f"\nSummary saved to: {summary_path}")
     print(f"Plots saved to: {output_dir / 'plots'}/")
+    print(f"Summary plots saved to: {output_dir / 'summary'}/")
     
     print("\n✓ Analysis complete!")
 

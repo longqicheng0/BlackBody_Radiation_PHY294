@@ -10,7 +10,7 @@ Built a complete Python analysis package for PHY294 blackbody radiation lab Step
 - **`__main__.py`** - Main analysis script (700+ lines)
   - Modular functions with type hints and docstrings
   - Robust data loading (auto-skips headers)
-  - Preprocessing: smoothing (Savitzky-Golay or moving average), baseline correction
+  - Preprocessing: raw data only
   - Smart peak detection with fallback for missing scipy
   - Automated main vs. small peak classification
   - Plot generation with annotations
@@ -151,9 +151,7 @@ Reports three measures with recommendations:
 ### Preprocessing Pipeline
 1. Load & validate data
 2. Sort by angle
-3. Smooth (Savitzky-Golay or moving average)
-4. Baseline correction (subtract low percentile)
-5. Peak detection on corrected signal
+3. Peak detection on raw signal
 
 ## Files Modified
 - ✓ Created: bb_step1/__init__.py
